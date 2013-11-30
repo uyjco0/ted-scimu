@@ -25,8 +25,9 @@ The used Vector Space Models are:
 The generation of these Vector Space Models is done through the use of excellent GENSIM software [7]
 
 6. Using all the functionality described above, TED-SCIMU is enabling a new way to navigate and discover TED talks:
-To the user is displayed a list of images associated with the objects from the Science Museum collection.
-When the user selects an image according her/his interests and preferences, then it is possible to show her/him an automatically related TED talk.
+ * To the user is displayed a list of images associated with the objects from the Science Museum collection.
+ *When the user selects an image according her/his interests and preferences, then it is possible to show her/him an automatically related TED talk.
+
 The relationship between the images and the TED talks is found through the main topics discovered in the TED talks using the Latent Dirichelt Allocation model for the TED talks corpus.
 
 
