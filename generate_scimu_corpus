@@ -1,0 +1,472 @@
+#!/usr/bin/python
+# -*- encoding: utf-8 -*-
+
+#
+# 'generate_scimu_corpus'
+# 
+# Copyright (C) 2013 Jorge Couchet <jorge.couchet at gmail.com>
+#
+# This file is part of 'ted-scimu'
+# 
+# 'ted-scimu' is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+# 
+# 'ted-scimu' is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+# 
+# You should have received a copy of the GNU General Public License
+# along with 'ted-scimu'.  If not, see <http ://www.gnu.org/licenses/>.
+#
+
+import sys
+import argparse
+import psycopg2
+import urllib2
+import StringIO
+import csv
+import traceback
+import random
+
+
+# The data in order to connect to the database to hold the Science Museum data
+DB_HOST = 'localhost'
+DB_PORT = 5432
+DB_NAME = 'ted'
+
+# The file with a summary of the Science Museum objects that belong to the generated Science Museum corpus
+SCIMU_PROCESSED_OBJECTS = 'gen_data/scimu_processed_objects.csv'
+
+def check_object_in_db(db_conn, db_cur, object_id):
+    """
+    It checks if a given Science Museum object ID is already in the PostgreSql database
+    PARAMETERS:
+       1. db_conn: The connection to the PostgreSql database
+       2. db_cur: The cursor to the PostgreSql database
+       3. object_id: The Science Museum object ID to check if exists in the database
+    RETURNS:
+       The internal ID if the ID is in the database, otherwise returns -1
+    """
+    res = -1
+    qry_chk_id = 'SELECT id FROM scimu_objects WHERE object_id = %s'
+
+    try:
+        db_cur.execute(qry_chk_id, (object_id, ))
+        qry_res = db_cur.fetchone()
+        if qry_res != None:
+            res = qry_res[0]
+    except:
+        db_conn.rollback()
+        print "check_object_in_db"
+        print ""
+        traceback.print_exc()
+
+    return res
+
+
+def add_object2db(db_conn, db_cur, object_id, name, title, maker, date_made, place_made, description):
+    """
+    It add the Science Museum object 's information to the PostgreSql database.
+    PARAMETERS:
+       1. db_conn: The connection to the PostgreSql database
+       2. db_cur: The cursor to the PostgreSQL database
+       3. object_id: The Science Museum object ID to be added to the database
+       4. name: The object 's name
+       5. title: The object 's title
+       6. maker: The object 's maker
+       7. date_made: The date when the object was made
+       8. place_made: The place where the objec was made
+       9. description: The object 's description
+    RETURNS:
+       If the adding was ok it returns the internal ID in the database. Otherwise it returns -1 if there was an exception or -2 if the object was
+       already in the database 
+    """
+    res = -1
+    qry_id = 'SELECT * FROM scimu_objects_seq'
+    qry = 'INSERT INTO scimu_objects (id, object_id, name, title, maker, date_made, place_made, description) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)'
+
+    if check_object_in_db(db_conn, db_cur, object_id) < 0:
+        try:
+            db_cur.execute(qry_id)
+            qry_res = db_cur.fetchone()
+            if qry_res != None:
+                internal_id = qry_res[0]
+                db_cur.execute(qry, (internal_id, object_id, name, title, maker, date_made, place_made, description))
+                db_conn.commit()
+                res = internal_id
+        except:
+            db_conn.rollback()
+            print "add_object2db"
+            print ""
+            traceback.print_exc()
+
+    else:
+        res = -2;
+
+    return res
+
+def check_media_in_db(db_conn, db_cur, media_id, media_key):
+    """
+    It checks if a given Science Museum media ID or media KEY is already in the PostgreSql database
+    PARAMETERS:
+       1. db_conn: The connection to the PostgreSql database
+       2. db_cur: The cursor to the PostgreSql database
+       3. media_id: The Science Museum media ID to check if exists in the database
+       4. media_key: The Science Museum media KEY to check if exists in the database
+    RETURNS:
+       A boolean signaling if the ID or KEY is already in the database
+    """
+    res = False
+    qry_chk_id = 'SELECT id FROM scimu_media WHERE (media_id = %s) or (media_key = %s)'
+
+    try:
+        db_cur.execute(qry_chk_id, (media_id, media_key))
+        qry_res = db_cur.fetchone()
+        if qry_res != None:
+            res = True
+    except:
+        db_conn.rollback()
+        print "check_media_in_db"
+        print ""
+        traceback.print_exc()
+
+    return res
+
+
+def add_media2db(db_conn, db_cur, media_id, object_id, media_key, caption):
+    """
+    It add the Science Museum media 's information to the PostgreSql database.
+    PARAMETERS:
+       1. db_conn: The connection to the PostgreSql database
+       2. db_cur: The cursor to the PostgreSQL database
+       3. media_id: The Science Museum media ID to be added to the database
+       4. object_id: The Science Museum object ID to which the media belongs
+       5. media_key: The KEY associated to the Science Museum media
+       6. caption: The media 's caption
+    RETURNS:
+       If the adding was ok it returns the internal ID in the database. Otherwise it returns -1 if there was an exception, -2 if the object was
+       already in the database or -3 if there was not possible to create an internal ID
+    """
+    res = -1
+    qry_id = 'SELECT * FROM scimu_media_seq'
+    qry = 'INSERT INTO scimu_media (id, object_id, media_id, media_key, caption) VALUES (%s, %s, %s, %s, %s)'
+
+    if not check_media_in_db(db_conn, db_cur, media_id, media_key):
+        try:
+            internal_object_id = check_object_in_db(db_conn, db_cur, object_id)
+            if internal_object_id > 0:
+                db_cur.execute(qry_id)
+                qry_res = db_cur.fetchone()
+                if qry_res != None:
+                    internal_id = qry_res[0]
+                    db_cur.execute(qry, (internal_id, internal_object_id, media_id, media_key, caption))
+                    db_conn.commit()
+                    res = internal_id
+                else:
+                    res = -3;
+        except:
+            db_conn.rollback()
+            print "add_media2db"
+            print ""
+            traceback.print_exc()
+
+    else:
+        res = -2
+
+    return res
+
+
+def generate_data(scimus_file, scimus_type, is_web, is_db, db_conn, db_cur):
+    """
+    If enabled it download the CSV files from the Science Museum or it loads a local copy, parses the file, if enable store the
+    information in a database and returns a dictionary with the data.
+    PARAMETERS:
+       1. scimus_file: The complete name to the Science Museum CSV file. It is an URL or a local path
+       2. scimus_type: A flag signaling if the CSV file has Science Museum objects (scimus_type == 'o') or the file has Science
+          Museum media (scimus_type == 'm')
+       3. is_web: A flag that says if to download the CSV file from the Science Museum file or to load the file from a local copy
+       4. is_db: A flag that says if to store the information in the PostgreSql database
+       5. db_conn: The connection to the PostgreSql database
+       6. db_cur: The cursor to the PostgreSql database
+    RETURNS:
+       A dict with a lists as values.
+       If scimus_type == 'o', then the dict 's key is an object ID and the list in the value has the following format:
+          [OBJECT_NAME, OBJECT_TITLE, OBJECT_MAKER, OBJECT_DATE, OBJECT_PLACE, OBJECT_DESCRIPTION]
+       If scimus_type == 'm' then the dict 's key is a media ID and the list in the value has the following format:
+          [OBJECT_ID, MEDIA_KEY, MEDIA_CAPTION]
+    """
+    res = {}
+    f = None
+    try:
+        if is_web == 'y':
+            print "Going to download from the Web the science museum file data."
+            string_res = urllib2.urlopen(scimus_file).read()
+            file_stream = StringIO.StringIO(string_res)
+            csv_reader = csv.reader(file_stream)
+        else:
+            print "Going to open a local file with the Science Museum data."
+            f = open(scimus_file, 'rb')
+            csv_reader = csv.reader(f)
+        print "Going to generate the data to be processed"
+        count = 1;
+        for row in csv_reader:
+             # The first line has the identifiers fields so I must not use it
+            if count > 1:
+                if scimus_type == 'o':
+                    # The file has the following format:
+                    #   0: object_id, 1: name, 2: title, 3: maker, 4: date_made, 5: place_made, 8: description
+                    o_id = row[0].decode('latin1')
+                    o_name = row[1].decode('latin1')
+                    o_title = row[2].decode('latin1')
+                    o_maker = row[3].decode('latin1')
+                    o_date = row[4].decode('latin1')
+                    o_place = row[5].decode('latin1')
+                    o_desc = row[8].decode('latin1')
+                    res[o_id] = [o_name, o_title, o_maker, o_date, o_place, o_desc]
+                    if is_db == 'y':
+                        print "Going to store in the database the object: %s"%(o_id)
+                        res = add_object2db(db_conn, db_cur, o_id, o_name, o_title, o_maker, o_date, o_place, o_desc)
+                        if res == -2:
+                            print "The object was already in the database: %s"%(o_id)
+                else:
+                     # The file has the following format:
+                     #   0: media_id, 1: object_id, 2: media_key, 3: caption
+                     m_id = row[0].decode('latin1')
+                     o_id = row[1].decode('latin1')
+                     m_key = row[2].decode('latin1')
+                     m_cap = ''
+                     if len(row) == 4:
+                         m_cap = row[3].decode('latin1')
+                     res[m_id] = [o_id, m_key, m_cap]
+                     if is_db == 'y':
+                         print "Going to store in the database the media: %s"%(m_id)
+                         res = add_media2db(db_conn, db_cur, m_id, o_id, m_key, m_cap)
+                         if res == -2:
+                             print "The media was already in the database: %s"%(m_id)
+                         elif res == -3:
+                             print "There is not in database the object associated with the media: %s"%(o_id)
+                     
+            count = count + 1
+
+        if (is_web != 'y') and (f is not None):
+            f.close()
+    except Exception as e:
+        try:
+            if (is_web != 'y') and (f is not None):
+                f.close()
+        except:
+            pass
+        print "There was an error generating the data from the Science Museum: %s" %(e)
+        sys.exit(1)
+    return res
+
+
+def connect_db(p_host, p_port, p_database, p_user, p_password):
+    """
+    It establishes the connection to the PostgreSql database used to store the Science Museum information.
+    PARAMETERS:
+       1. p_host: The host where is listening the PostgreSql database
+       2. p_port: The port where is listening the PostgreSql database
+       3. p_database: The database name
+       4. p_user: The database user
+       5. p_password: The database user 's password
+    RETURNS:
+       A tuple with the following format:
+         (BOOLEAN_FLAG_IF_CONNECTION_SUCCESFULLY, DATABASE_CONNECTION)
+    """
+    connected = False
+    conn = None
+    try:
+        conn = psycopg2.connect(host=p_host, port=p_port, database=p_database, user=p_user, password=p_password)
+        connected = True
+    except:
+        print "connect_db"
+        print ""
+        traceback.print_exc()
+
+    return (connected, conn)
+
+
+def generate_file(o_id, o_name, o_title, o_desc, dir_name):
+    """
+    It generate the file that will compose the Science Museum corpus. The generated file has as a name the object ID 
+    (not totally because the '/' in the object ID are replaced by '-'), and as a content the text built through the 
+    concatenation of the object 's name, title and description. This corpus will be used later in order to train 
+    different Vector Space Models and also to look for similarities with the TED talks corpus.
+    PARAMETERS:
+       1. o_id: The Science Museum object ID
+       2. o_name: The object 's name
+       3. o_title: The object 's title
+       4. o_desc: The object 's description
+       5. dir_name: The directory where the file will be placed
+    RETURNS:
+       It returns a tuple with the following format:
+          (FILE_NAME_WITH_PATH, FILE_NAME_ALONE) 
+    """
+    try:
+        file_content = ''
+        # The content to be relationed with the TED talks is the text in the 
+        # object 's name, title and description
+        file_content = file_content + o_name + ' ' + o_title + ' ' + o_desc
+        # Be careful because some object 's IDs are having '/' inside
+        partial_name = o_id.replace('/', '-') + '.txt'
+        file_name = dir_name + partial_name
+        f = open(file_name, "w")
+        f.write(file_content.encode('utf-8').strip())
+        f.close()
+        print "Generated the file: %s"%(file_name)
+        return (file_name, partial_name)
+    except:
+        print "generate_file"
+        print ""
+        traceback.print_exc()
+
+
+
+if __name__ == "__main__":
+
+    parser = argparse.ArgumentParser(description="The script if enabled get the data from the Science Museum (http://api.sciencemuseum.org.uk/documentation/collections) or from a local copy, stores them in a database when <IS_DATABASE> == 'y', and finally when <IS_REL> == 'y' or 's' generates in the directory <REL_DIRECTORY> the Science Museum corpus that will be relationed later with the TED talks corpus ")
+
+    parser.add_argument('-r','--isrel', help="It says if the script is generating the Science Museum corpus that will be relationed later with the TED talks corpus. When <IS_REL> == 's', it is generating the corpus with a sample from the Science Museum data. When <IS_REL> == 'y', all the data from the Science Museum is used to generate the corpus, be careful because it is a lot of data! ", metavar='IS_REL', choices=['y', 'n', 's'], default='n')
+    parser.add_argument('-s','--samplesize', help="The size of the sample to be built from the Science Museum data. It is used when <IS_REL> == 's'. The sample is used to generate the Science Museum corpus ", metavar='SAMPLE_SIZE', type=int, default=0)
+    parser.add_argument('-t','--reldir', help="The name of an existing directory where to generate the Science Museum corpus ", metavar='REL_DIRECTORY', default='')
+    parser.add_argument('-d','--isdb', help="It says if the Science Museum data is stored in the database ", metavar='IS_DATABASE', choices=['y', 'n'], default='y')
+    parser.add_argument('-u','--dbuser', help="The database user ", metavar='DB_USER', default='')
+    parser.add_argument('-b','--dbpasswd', help="The password for the database user ", metavar='DB_USER_PASSWORD', default='')
+    parser.add_argument('-w','--isweb', help="It says if the script is downloading the Science Museum data from the web or using a local file ", metavar='IS_WEB', choices=['y', 'n'], default='y')
+    parser.add_argument('-o','--objects', help="The URLs (<IS_WEB> == 'y') or paths (<IS_WEB> == 'n') to the CSV files with the objects data from the Science Museum ", metavar='OBJECT_URLS', nargs='+')
+    parser.add_argument('-m','--media', help="The URLs (<IS_WEB> == 'y') or paths (<IS_WEB> == 'n') to the CSV files with the media data of the objects from the Science Museum. If not <OBJECT_URLS> is given and <IS_DATABASE> == 'y', be sure that already there are objects data in the database, otherwise the media data will not stored in the database because it is referencing object data ", metavar='MEDIA_URLS', nargs='+')
+ 
+    args = parser.parse_args()
+
+    objects = []
+    if args.objects is not None:
+        objects = args.objects
+
+    media = []
+    if args.media is not None:
+        media = args.media
+
+    if (len(objects) == 0) and (len(media) == 0):
+        print 'There is not sources from which generate the data'
+        sys.exit(1)
+
+    if (args.isrel == 'y') or (args.isrel == 's'):
+       if args.reldir == '':
+           print 'The name of the directory where to store the Science Museum corpus cannot be empty'
+           sys.exit(2)
+
+       if args.isrel == 's':
+           if args.samplesize <= 0:
+               print "When <IS_REL> == 's', then <SAMPLE_SIZE> must be greater than 0"
+               sys.exit(2)
+
+    db_conn = None
+    db_cur = None
+    if args.isdb == 'y':
+       if (args.dbuser == '') or (args.dbpasswd == ''):
+           print 'The user or password for the database where will be stored the Science Museum data cannot be empty'
+           sys.exit(2)
+       else:
+           connected, db_conn = connect_db(DB_HOST, DB_PORT, DB_NAME, args.dbuser, args.dbpasswd)
+           if not connected:
+               print 'It was not possible to establish the connection to the database that will store the Science Museum data'
+               sys.exit(2)
+           else:
+               db_cur = db_conn.cursor()
+
+    # It is needed to generate first in the database the object data, because the media data makes reference to them
+    res_objects = {}
+    for object_file in objects:
+        # Download from the web or loads from a local copy the CSV file with Science Museum objects data, parses it, 
+        # stores in the database if enabled, and returns a dict with the parsed data
+        res = generate_data(object_file, 'o', args.isweb, args.isdb, db_conn, db_cur)
+        for k in res.keys():
+            res_objects[k] = res[k]
+
+    res_media = {}
+    for media_file in media:
+        # Download from the web or loads from a local copy the CSV file with Science Museum media data, parses it, 
+        # stores in the database if enabled, and returns a dict with the parsed data
+        res = generate_data(media_file, 'm', args.isweb, args.isdb, db_conn, db_cur)
+        for k in res.keys():
+            res_media[k] = res[k]
+
+    # If isrel= 'y' or the sample size is bigger than the amount of media items, then the script is processing all the available data
+    # from the Science Museum
+    processed_objects = {}
+    if (args.isrel == 'y') or ((args.isrel == 's') and (len(res_media.keys()) <= args.samplesize)):
+         print "Going to generate the data to be relationed with the TED data. The data is generated using all the objects with media"
+         # It is processing only the objects that have media associated to them
+         for k in res_media.keys():
+             # Get the media
+             me = res_media[k]
+             # Get the object associated to the media
+             o_id = me[0]
+             # Check if the object is accessible and was not processed before (the script is choosing only one media per object)
+             if (o_id in res_objects) and (o_id not in processed_objects):
+                 ob = res_objects[o_id]
+                 o_name = ob[0]
+                 o_title = ob[1]
+                 o_desc = ob[5]
+                 # Generate the file for the Science Museum corpus
+                 rel_file_name, partial_name = generate_file(o_id, o_name, o_title, o_desc, args.reldir)
+                 # Mark the object as already processed
+                 processed_objects[o_id] = [rel_file_name, partial_name, o_id, o_name, o_title, o_desc, me[1]]
+    elif args.isrel == 's':
+        print "Going to generate the data to be relationed with the TED data. The data is generated using a sample of size: %s"%(args.samplesize)
+        processed_media = {}
+        not_used_media = []
+        # Generate a sample with size: args.samplesize
+        for num_sample in range(args.samplesize):
+            found = False
+            # To avoid an infinite loop it is needed to control that there are available media items to fulfill the sample size
+            while (not found) and ((len(not_used_media) + len(processed_media.keys())) < len(res_media.keys())):
+                # Select an index from the key space using a sampling with an uniform distribution 
+                k_pos = random.randint(0, len(res_media.keys())-1)
+                # Select the media key associated with the index
+                k = res_media.keys()[k_pos]
+                me = res_media[k]
+                # It is processing only the objects that have media associated to them
+                o_id = me[0]
+                # Check if the object is accessible and was not processed before. Also it checks if the media was not selected previously 
+                # by the random sample from the uniform distribution
+                if (o_id in res_objects) and (o_id not in processed_objects) and (k not in processed_media):
+                    ob = res_objects[o_id]
+                    o_name = ob[0]
+                    o_title = ob[1]
+                    o_desc = ob[5]
+                    # Generate the file for the Science Museum corpus
+                    rel_file_name, partial_name = generate_file(o_id, o_name, o_title, o_desc, args.reldir)
+                    # Mark the object and media items as already processed
+                    processed_objects[o_id] = [rel_file_name, partial_name, o_id, o_name, o_title, o_desc, me[1]]
+                    processed_media[k] = 1
+                    found = True
+                # It is a media that has not an associated object, or the associated object already has another media
+                # The script is choosing only one media per object
+                elif (o_id not in res_objects) or (o_id in processed_objects):
+                    not_used_media.append(k)
+
+            # The available media items does not fulfill the sample size
+            if (len(not_used_media) + len(processed_media.keys())) >= len(res_media.keys()):
+                print "The available media items %s does not fulfill the sample size %"%(len(processed_media.keys()),args.samplesize)
+                break
+
+    if ((args.isrel == 'y') or (args.isrel == 's')) and (len(processed_objects.keys()) > 0):
+        try:
+            # It generates a file with a summary of all the processed Science Museum objects that belongs to the 
+            # Science Museum corpus
+            f = open(SCIMU_PROCESSED_OBJECTS, "w")
+            for k in processed_objects.keys():
+                ob = processed_objects[k]
+                # It is writing to the file:
+                #   DOCUMENT_COMPLETE_PATH, DOCUMENT_NAME, OBJECT_ID, OBJECT_NAME, OBJECT_TITLE, OBJECT_DESC, MEDIA_ID
+                f.write((','.join(ob)).encode('utf-8').strip() + '\n')
+            f.close()
+        except:
+           print "main"
+           print ""
+           traceback.print_exc() 

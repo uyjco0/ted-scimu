@@ -1,0 +1,101 @@
+#!/usr/bin/python
+# -*- encoding: utf-8 -*-
+
+#
+# 'generate_relationships_ted_scimu'
+# 
+# Copyright (C) 2013 Jorge Couchet <jorge.couchet at gmail.com>
+#
+# This file is part of 'ted-scimu'
+# 
+# 'ted-scimu' is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+# 
+# 'ted-scimu' is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+# 
+# You should have received a copy of the GNU General Public License
+# along with 'ted-scimu'.  If not, see <http ://www.gnu.org/licenses/>.
+#
+
+import base
+import similarity_query_scimu
+import gensim
+from gensim import corpora, similarities, models
+import random
+import traceback
+
+
+# Flag saying if only search for relationships for the Science
+# Museum corpus 's documents which were augmentated
+ONLY_DOCS_AUGMENTATED = True
+FILENAME_DOCS_AUGMENTATED = 'gen_data/docs_augmentated'
+# Local folder and files data
+SCIMU_CORPUS_FOLDER = 'rel_scimu'
+TED_CORPUS_FOLDER = 'training_ted'
+FILENAME_FROM_SCIMU = 'gen_data/sc1'
+FILENAME_FROM_TED = 'gen_data/t1'
+FILENAME_SCIMU_PROCESSED_OBJECTS = 'gen_data/scimu_processed_objects'
+RELATIONSHIPS_FOLDER = 'gen_relationships'
+# TED talks parameters
+BASE_URL_TED_TALK = 'http://www.ted.com/talks/view/id/'
+# Science Museum parameters
+MEDIA_BASE_URL = ' http://collectionsonline.nmsi.ac.uk/grabimg.php?wm=1&kv='
+MEDIA_EXTENSION = '.jpg'
+
+
+if __name__ == "__main__":
+
+    # Load the needed files
+    docs2corpus_ted = base.get_docs2corpus(FILENAME_FROM_TED)
+    docs2corpus_scimu = base.get_docs2corpus(FILENAME_FROM_SCIMU)
+    dictionary_ted = corpora.Dictionary().load(FILENAME_FROM_TED + '.dict')
+    mm_scimu = corpora.MmCorpus(FILENAME_FROM_SCIMU + '.mm')
+    mm_ted = corpora.MmCorpus(FILENAME_FROM_TED + '.mm')
+    lda_ted = gensim.models.ldamodel.LdaModel.load(FILENAME_FROM_TED + '.lda')
+    index_ted = similarities.Similarity.load(FILENAME_FROM_TED + '.index')
+
+    found = False
+    best = None
+    while not found:
+        
+        # Select a random document only from the augmentated documents (the default option) 
+        if ONLY_DOCS_AUGMENTATED:
+            docs_augmentated = similarity_query_scimu.get_scimu_augmentated(FILENAME_DOCS_AUGMENTATED)
+            pos = random.randint(0, len(docs_augmentated)-1)
+            vsm_id = similarity_query_scimu.get_vsm_id_from_document_name(docs_augmentated[pos], docs2corpus_scimu)
+        else:
+            # Select a random document from the whole Science Museum corpus
+            vsm_id = random.randint(0, len(docs2corpus_scimu)-1)
+
+        res = similarity_query_scimu.get_talks_similar2scimu_object(True,vsm_id,'',FILENAME_SCIMU_PROCESSED_OBJECTS, docs2corpus_ted, docs2corpus_scimu, dictionary_ted, mm_scimu, lda_ted, index_ted)
+
+        if len(res) > 0:
+            # The first result is the one with the higher similarity score between the TED talks and the Science Museum document
+            best = res[0]
+            found = True
+    try:
+        media_id = best[-1]
+        gen_file_name = RELATIONSHIPS_FOLDER + '/' + media_id + '.txt'
+        sim_score = str(best[0])
+        # Get the most contributing topic for the TED talk and the Science Museum object
+        ted_topic, scimu_topic = similarity_query_scimu.get_most_contributing_topic(best[-3], best[-2], mm_ted, mm_scimu, lda_ted)
+        with open(gen_file_name, 'w') as f:
+            ted_doc = best[1]
+            ted_parts = ted_doc.split('.')
+            ted_url = BASE_URL_TED_TALK + ted_parts[0]
+            scimu_doc = SCIMU_CORPUS_FOLDER + '/' + best[2]
+            scimu_object_id = best[3]
+            f.write("OBJECT ID: " + scimu_object_id + " *** OBJECT DOC: " + scimu_doc + " *** TED TALK: " + ted_url + " *** TOP TED TOPIC: " + ted_topic + " *** TOP SCIMU TOPIC: " + scimu_topic + '\n')
+            f.close()
+
+        similarity_query_scimu.download_image_from_scimu(MEDIA_BASE_URL, RELATIONSHIPS_FOLDER, media_id, MEDIA_EXTENSION)
+
+        print "Generated with score %s the files: %s, %s"%(sim_score,gen_file_name, RELATIONSHIPS_FOLDER + '/' + media_id + MEDIA_EXTENSION)
+    except:
+        print ""
+        traceback.print_exc()

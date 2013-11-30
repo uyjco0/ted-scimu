@@ -1,0 +1,566 @@
+#!/usr/bin/python
+# -*- encoding: utf-8 -*-
+
+#
+# 'generate_ted_corpus'
+# 
+# Copyright (C) 2013 Jorge Couchet <jorge.couchet at gmail.com>
+#
+# This file is part of 'ted-scimu'
+# 
+# 'ted-scimu' is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+# 
+# 'ted-scimu' is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+# 
+# You should have received a copy of the GNU General Public License
+# along with 'ted-scimu'.  If not, see <http ://www.gnu.org/licenses/>.
+#
+
+import re
+import urllib
+import urllib2
+import sys
+import argparse
+import csv
+import simplejson
+import cPickle
+import psycopg2
+import time
+import traceback
+
+# The values used to login with a Google Account and download a Google Document
+URL_TOKEN = "https://www.google.com/accounts/ClientLogin"
+TOKEN_ACCOUNT_TYPE = "HOSTED_OR_GOOGLE"
+TOKEN_SERVICE = "wise"
+GID_VALUE = 0
+DOWNLOAD_FORMAT = "csv"
+DOWNLOAD_URL_FORMAT = "https://spreadsheets.google.com/feeds/download/spreadsheets/Export?key=%s&exportFormat=%s&gid=%i"
+DOWNLOAD_HEADERS_AUTH = "GoogleLogin auth="
+DOWNLOAD_HEADERS_GDATA = "3.0"
+
+# The link with the TED 's spreadsheet:
+# See at: http://on.ted.com/23 (it comes from: http://www.ted.com/talks -> "All talks in a spreadsheet".
+# The spreadsheet has the metadata needed for each TED talk
+SPREADSHEET_ID = "0AsKzpC8gYBmTcGpHbFlILThBSzhmZkRhNm8yYllsWGc"
+
+MIN_FILE_INFO_COLS = 8
+MAX_FILE_INFO_COLS = 9
+
+# The position of each talk 's metadata from the TED 's spreadsheet
+TALK_URL_POS = 0
+TALK_ID_POS = 1
+TALK_SPEAKER_POS = 2
+TALK_NAME_POS = 3
+SHORT_SUMMARY_POS = 4
+TED_EVENT_NAME_POS = 5
+TALK_DURATION_POS = 6
+TALK_PUBLISH_DATE_POS = 7
+
+# The position of each talk 's subtitles
+TALK_SUBTITLES_POS = 8
+
+
+# The data in order to connect to the database to hold the TED talks data
+DB_HOST = 'localhost'
+DB_PORT = 5432
+DB_NAME = 'ted'
+
+# To avoid lose data when retrieving the subtitles
+SUBTITLES_TRIALS = 5
+SUBTITLES_SLEEP = 3
+
+class Spreadsheet(object):
+    """
+    The class to model the needed data to download a Google Spreadsheet.
+    """
+    def __init__(self, key):
+        super(Spreadsheet, self).__init__()
+        self.key = key
+
+class AuthClient(object):
+    """
+    The class in charge to login with a Google Accound and download a Google Spreadsheet.
+    """
+    def __init__(self, email, password):
+        super(AuthClient, self).__init__()
+        self.email = email
+        self.password = password
+
+    def _get_auth_token(self, email, password, source, service):
+        url = URL_TOKEN
+        params = {
+            "Email": email, "Passwd": password,
+            "service": service,
+            "accountType": TOKEN_ACCOUNT_TYPE,
+            "source": source
+        }
+        req = urllib2.Request(url, urllib.urlencode(params))
+        return re.findall(r"Auth=(.*)", urllib2.urlopen(req).read())[0]
+
+    def get_auth_token(self):
+        source = type(self).__name__
+        return self._get_auth_token(self.email, self.password, source, service=TOKEN_SERVICE)
+
+    def download(self, spreadsheet, gid=GID_VALUE, format=DOWNLOAD_FORMAT):
+        url_format = DOWNLOAD_URL_FORMAT
+        headers = {
+            "Authorization": DOWNLOAD_HEADERS_AUTH + self.get_auth_token(),
+            "GData-Version": DOWNLOAD_HEADERS_GDATA
+        }
+        req = urllib2.Request(url_format % (spreadsheet.key, format, gid), headers=headers)
+        return urllib2.urlopen(req)
+
+class CsvManager(object):
+    """
+    The class in charge to parse and manage (serialize to local file and load from local file) the TED talks spreadsheet downloaded as a CSV file.
+    """
+    def __init__(self, csv_file):
+        super(CsvManager, self).__init__()
+        self.csv_file = csv_file
+        self.parsedFile = []
+
+    def parseCSV(self):
+        # The file has the following format:
+        # A list with the following fields: ['URL', 'ID', 'URL', 'Speaker', 'Name', 'Short Summary', 'Event', 'Duration', 'Publish date']
+        if self.csv_file is not None:
+            res = []
+            count = 1
+            try:
+                for row in csv.reader(self.csv_file):
+                    # The first line has the identifiers fields so I must not use it
+                    if count >= 2:
+                        # POS = 0 -> TALK URL
+                        # POS = 1 -> TALK ID
+                        # POS = 3 -> TALK SPEAKER
+                        # POS = 4 -> TALK NAME
+                        # POS = 5 -> TALK SHORT SUMMARY
+                        # POS = 6 -> TED EVENT NAME
+                        # POS = 7 -> TALK DURATION
+                        # POS = 8 -> TALK PUBLISHED DATE
+                        res.append([row[0], row[1], row[3], row[4], row[5], row[6], row[7], row[8]])
+                    count = count + 1
+                self.parsedFile = res
+            except:
+                print "parseCSV"
+                print ""
+                traceback.print_exc()
+
+    def getParsedFile(self):
+        return self.parsedFile
+
+    def setParsedFile(self, parsedFile):
+        if (parsedFile is not None) and (isinstance(parsedFile, list)):
+            self.parsedFile = parsedFile
+
+    def __len__(self):
+        return len(self.parsedFile)
+
+    def getTalk(self, pos):
+        len_file = len(self.parsedFile)
+        if len_file > 0 and pos < len_file:
+            return self.parsedFile[pos]
+        else:
+            return None
+        
+    def getTalkId(self, talk_row):
+       if (talk_row is not None) and (len(talk_row) == MIN_FILE_INFO_COLS or len(talk_row) == MAX_FILE_INFO_COLS):
+           return talk_row[TALK_ID_POS]
+       else:
+           return None
+
+    def getTalkURLId(self, talk_row):
+       if (talk_row is not None) and (len(talk_row) == MIN_FILE_INFO_COLS or len(talk_row) == MAX_FILE_INFO_COLS):
+           return str(talk_row[TALK_URL_POS]) + str(talk_row[TALK_ID_POS])
+       else:
+           return None
+
+    def getTalkSpeaker(self, talk_row):
+       if (talk_row is not None) and (len(talk_row) == MIN_FILE_INFO_COLS or len(talk_row) == MAX_FILE_INFO_COLS):
+           return talk_row[TALK_SPEAKER_POS]
+       else:
+           return None
+
+    def getTalkName(self, talk_row):
+       if (talk_row is not None) and (len(talk_row) == MIN_FILE_INFO_COLS or len(talk_row) == MAX_FILE_INFO_COLS):
+           return talk_row[TALK_NAME_POS]
+       else:
+           return None
+
+    def getTalkSummary(self, talk_row):
+       if (talk_row is not None) and (len(talk_row) == MIN_FILE_INFO_COLS or len(talk_row) == MAX_FILE_INFO_COLS):
+           return talk_row[SHORT_SUMMARY_POS]
+       else:
+           return None
+
+    def getTalkEvent(self, talk_row):
+       if (talk_row is not None) and (len(talk_row) == MIN_FILE_INFO_COLS or len(talk_row) == MAX_FILE_INFO_COLS):
+           return talk_row[TED_EVENT_NAME_POS]
+       else:
+           return None
+
+    def getTalkDuration(self, talk_row):
+       if (talk_row is not None) and (len(talk_row) == MIN_FILE_INFO_COLS or len(talk_row) == MAX_FILE_INFO_COLS):
+           return talk_row[TALK_DURATION_POS]
+       else:
+           return None
+
+    def getTalkDate(self, talk_row):
+       if (talk_row is not None) and (len(talk_row) == MIN_FILE_INFO_COLS or len(talk_row) == MAX_FILE_INFO_COLS):
+           return talk_row[TALK_PUBLISH_DATE_POS]
+       else:
+           return None
+
+    def getTalkSubtitles(self, talk_row):
+        if (talk_row is not None) and (len(talk_row) == MAX_FILE_INFO_COLS):
+            return talk_row[TALK_SUBTITLES_POS]
+        else:
+            return []
+
+    def addSubtitles(self, pos, subtitles):
+	if pos < len(self.parsedFile):
+            talk_row = self.parsedFile[pos]
+            if (talk_row is not None) and (len(talk_row) <= MAX_FILE_INFO_COLS):
+                if len(talk_row) == MIN_FILE_INFO_COLS:
+                    talk_row.append(subtitles)
+                else:
+                    talk_row[TALK_SUBTITLES_POS] = subtitles
+                self.parsedFile[pos] = talk_row
+
+    def serialize(self, file_name):
+        if len(self.parsedFile) > 0:
+            cPickle.dump(self.parsedFile, open(file_name, 'w'))
+
+    def load_serialized_data(self, file_name):
+        parsedFile = cPickle.load(open(file_name, 'r'))
+        if (parsedFile) is not None and (isinstance(parsedFile, list)):
+            self.parsedFile = parsedFile 
+
+class SubtitlesManager(object):
+    """
+    The class in charge of download the subtitles for a given TED talk and a given language.
+    """
+    def getTalkSubTitles(self, talk_id, lang_code):
+        subtitles = []
+        try:
+            # It is assuming that exist the subtitles for the language at: 'lang_code'.
+            # If there aren't subtitles for this language there is an exception that is managed here.
+            is_end = False
+            amount = 1
+            while not is_end:
+                try:
+                    res = urllib.urlopen('http://www.ted.com/talks/subtitles/id/%s/lang/%s'%(talk_id, lang_code))
+                    json_data = simplejson.load(res)
+                    is_end = True
+                except:
+                    if SUBTITLES_TRIALS == amount:
+                        is_end = True
+                        json_data = {}
+                    else:
+                        amount = amount + 1
+                        time.sleep(SUBTITLES_SLEEP)
+
+            if 'captions' in json_data:
+                for row in json_data['captions']:
+                    # The interesting keys are: 'content' (string) and 'startOfParagraph' (boolean)
+                    if ('content' in row) and ('startOfParagraph' in row):
+                        subtitles.append((row['content'], row['startOfParagraph']))
+        except:
+            print "getTalkSubTitles"
+            print ""
+            traceback.print_exc()
+        return subtitles
+
+
+def check_talk_in_db(db_conn, db_cur, talk_id):
+    """
+    It checks if a given TED talk ID is already in the PostgreSql database
+    PARAMETERS:
+       1. db_conn: The connection to the PostgreSql database
+       2. db_cur: The cursor to the PostgreSql database
+       3. talk_id: The TED talk ID to check if exists in the database
+    RETURNS:
+       A boolean signaling if the ID is or not in the database
+    """
+    res = False
+    qry_chk_id = 'SELECT talk_id FROM ted_talks WHERE talk_id = %s'
+
+    try:
+        db_cur.execute(qry_chk_id, (talk_id, ))
+        qry_res = db_cur.fetchone()
+        if qry_res != None:
+            res = True
+    except:
+        db_conn.rollback()
+        print "check_talk_in_db"
+        print ""
+        traceback.print_exc()
+
+    return res
+
+def add_ted_talk2db(db_conn, db_cur, talk_id, url, speaker, name, event, summary, duration, talk_date, subtitles):
+    """
+    It add the TED talk information to the PostgreSql database.
+    PARAMETERS:
+       1. db_conn: The connection to the PostgreSql database
+       2. db_cur: The cursor to the PostgreSQL database
+       3. talk_id: The TED talk ID to be added to the database
+       4. url: The URL to the TED talk
+       5. speaker: The TED talk 's speaker
+       6. name: The TED talk 's name
+       7. event: The event that held the TED talk
+       8. summary: A summary for the TED talk
+       9. duration: The time duration for the TED talk
+      10. talk_date: The TED talk 's date
+      11. subtitles: The TED talk 's english subtitles
+    RETURNS:
+       Nothing. The script adds information to the PostgreSql database 
+    """
+    res = -1
+    qry_id = 'SELECT * FROM ted_talks_seq'
+    qry = 'INSERT INTO ted_talks (id, talk_id, url, speaker, name, event, summary, duration, talk_date, subtitles) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)'
+
+    try:
+        db_cur.execute(qry_id)
+        qry_res = db_cur.fetchone()
+        if qry_res != None:
+            internal_id = qry_res[0]
+            db_cur.execute(qry, (internal_id, talk_id, url, speaker, name, event, summary, duration, talk_date, subtitles))
+            db_conn.commit()
+            res = internal_id
+    except:
+        db_conn.rollback()
+        print "add_ted_talk2db"
+        print ""
+        traceback.print_exc()
+
+    return res
+
+
+def download_ted_data(auth_email, auth_passwd, serialize_file_name, db_conn, db_cur):
+    """
+    It is going to get the TED talks metadata from the TED spreadsheet, after that is downloading the english subtitles for each talk and
+    storing all this information in the database (if enabled). Finnaly it is serializing all the data to a local file.
+    PARAMETERS:
+       1. auth_email: A google account in order to download the TED spreadsheet as a CSV file
+       2. auth_passwd: The google account 's password
+       3. serialize_file_name: The name of the local file where all the TED talks information will be serialized
+       4. db_conn: The connection to the PostgreSql database where the TED talks information will be stored. If it is None the data is not
+          stored in the database
+       5. db_cur: The cursor to the PostgreSql database where the TED talks information will be stored. If it is None the data is not stored
+          in the database
+    RETURNS:
+       Nothing. It is serializing the TED talks information to a local file and storing the data in a PostgreSql database (if enabled)
+    """
+
+    ###############################################
+    ##### FIRST GET ALL THE TED TALK METADATA #####
+    ###############################################
+
+    token = AuthClient(auth_email, auth_passwd)
+    sfile = Spreadsheet(SPREADSHEET_ID)
+
+    print "Getting the full TED talks data."
+    try:
+        cmanager = CsvManager(token.download(sfile))
+    except Exception as e:
+        print "There was not possible to download the Google doc with the full TED data: %s" %(e)
+        sys.exit(1)
+
+    print "Parsing the full TED talks data."
+    try:
+        cmanager.parseCSV()
+    except Exception as e:
+        print "There was not possible to parse the Google doc with the full TED data: %s" %(e)
+        sys.exit(1)
+
+    ###############################################################################################
+    ##### SECOND GET ALL THE ENGLISH SUBTITLES AND STORE IN THE DATABASE THE TALK INFORMATION #####
+    ###############################################################################################
+
+    if len(cmanager) > 0:
+        ted_talks = cmanager.getParsedFile()
+        print "Going to download subtitles for all the TED talks."
+        smanager = SubtitlesManager()
+        for pos in range(len(ted_talks)):
+            talk = ted_talks[pos]
+            talk_id = cmanager.getTalkId(talk)
+            if talk_id is not None:
+                print "Going to download subtitle for the talk: %s" %(talk_id)
+                subtitles = smanager.getTalkSubTitles(talk_id, 'en')
+                cmanager.addSubtitles(pos, subtitles)
+                # The parameters are not 'None' when <IS_DATABASE> = 'y'
+                if (db_conn is not None) and (db_cur is not None):
+                    if not check_talk_in_db(db_conn, db_cur, talk_id):
+                        print "Going to add to the database the talk: %s" %(talk_id)
+                        duration = cmanager.getTalkDuration(talk)
+                        if duration == '':
+                            duration = None
+                        res = add_ted_talk2db(db_conn, db_cur, talk_id, cmanager.getTalkURLId(talk), cmanager.getTalkSpeaker(talk), cmanager.getTalkName(talk), cmanager.getTalkEvent(talk), cmanager.getTalkSummary(talk), duration, cmanager.getTalkDate(talk), subtitles)
+                        if res < 0:
+                            print "There was not possible to add the TED talk to the database: %s" %(talk)
+                            sys.exit(1)
+
+        ###############################################
+        ##### THIRD SERIALIZING THE TED TALK DATA #####
+        ###############################################
+
+        print "Going to serialize the full TED data with subtitles."
+        try:
+            cmanager.serialize(serialize_file_name)
+        except Exception as e:
+            print "There was not possible to serialize the full TED data with subtitles: %s" %(e)
+            sys.exit(1)
+
+    else:
+        print "There is not data available in order to download subtitles."
+
+def load_serialized_ted_data(cmanager, serialized_file_name):
+    """
+    It loads from a local file the serialized TED talks.
+    PARAMETERS:
+       1. cmanager: The class instance in charge to manage the TED talks information
+       2. serialized_file_name: The name of the file with the serialized TED talks information
+    RETURNS:
+       Nothing. It is modifiying the class instance ('cmanager') with a reference to the serialized file 
+    """ 
+    try:
+        if cmanager is not None:
+            cmanager.load_serialized_data(serialized_file_name)
+    except Exception as e:
+        print "There was not possible to load the full TED data with subtitles from the serialized data file: %s" %(e)
+        sys.exit(1)
+
+def generate_training_files(serialized_file_name, training_dir_name):
+    """
+    For each TED talk is generating a document. The name of the document is the TED talk ID and the document content is the
+    TED talk subtitles.
+    PARAMETERS:
+       1. serialized_file_name: The name of the file with the serialized TED talks
+       2. training_dir_name: The directory name where the generated documents will be stored
+    RETURNS:
+       Nothing. It is generating the TED talks corpus under the 'training_dir_name' directory 
+    """
+    cmanager = CsvManager(None)
+    try:
+        print "Going to load the serialized file data."
+        load_serialized_ted_data(cmanager, serialized_file_name)
+        if len(cmanager) > 0:
+            ted_talks = cmanager.getParsedFile()
+            print "Going to generate the training files."
+            for pos in range(len(ted_talks)): 
+                talk = ted_talks[pos]
+                subtitles = cmanager.getTalkSubtitles(talk)
+                if subtitles is not None and len(subtitles) > 0:
+                    file_content = ''
+                    for pos2 in range(len(subtitles)):
+                        # Each subtitle entry is a tuple where:
+                        #  - At the first position there is a text subtitle
+                        #  - At the second position there is a flag saying if it is an end of paragraph or not.
+                        # ---
+                        # It is converting to text/bytes an unicode content with possible words from other languages.
+                        # For this reason the script is using the string function 'encode' in order to avoid errors as:
+                        # 'ascii' codec can't encode character ..'
+                        text_content = (subtitles[pos2][0]).encode('utf-8')
+                        # It is cleaning from the text some metawords found through a visual screening of the data 
+                        text_content = text_content.replace("(Applause)", ' ')
+                        text_content = text_content.replace("(Laughter)", ' ')
+                        text_content = text_content.replace("(Music)", ' ')
+                        text_content = text_content.replace("(Camera shutter)", ' ')
+                        text_content = text_content.replace("(Thuds)", ' ')
+                        text_content = text_content.replace("(Breathing)", ' ')
+                        text_content = text_content.replace("(Bells)", ' ')
+                        text_content = text_content.replace("(Mock sob)", ' ')
+                        m = re.match(ur'.*(\(Audience:(.+)\)).*', text_content)
+                        if m:
+                            full_text = m.groups()[0]
+                            text = m.groups()[1]
+                            text_content = text_content.replace(full_text, text + ' ')
+   
+                        file_content = file_content + ' ' + text_content
+                    if file_content != '' and file_content != ' ':
+                        training_file_name = training_dir_name + cmanager.getTalkId(talk) + '.txt'
+                        f = open(training_file_name, "w")
+                        f.write(file_content)
+                        f.close()
+                        print "Generated the file: %s"%(training_file_name)
+    except Exception as e:
+        print "There was not possible to generate the tranining files from the serialized data file: %s" %(e)
+        sys.exit(1)
+
+
+def connect_db(p_host, p_port, p_database, p_user, p_password):
+    """
+    It establishes the connection to the PostgreSql database used to store the TED talks information.
+    PARAMETERS:
+       1. p_host: The host where is listening the PostgreSql database
+       2. p_port: The port where is listening the PostgreSql database
+       3. p_database: The database name
+       4. p_user: The database user
+       5. p_password: The database user 's password
+    RETURNS:
+       A tuple with the following format:
+         (BOOLEAN_FLAG_IF_CONNECTION_SUCCESFULLY, DATABASE_CONNECTION)
+    """
+    connected = False
+    conn = None
+    try:
+        conn = psycopg2.connect(host=p_host, port=p_port, database=p_database, user=p_user, password=p_password)
+        connected = True
+    except:
+       print "connect_db"
+       print ""
+       traceback.print_exc() 
+    return (connected, conn)
+
+
+if __name__ == "__main__":
+
+    parser = argparse.ArgumentParser(description="When IS_DOWNLOAD == 'y' the script downloads the subtitles for each TED talk in the TED 's spreadsheet at http://on.ted.com/23, serializes this data in the file <FILE_NAME> and store the data in a database when <IS_DATABASE> == 'y'. When <IS_TRAIN> == 'y' the script uses an existing <FILE_NAME> in order to generate in the directory <TRAINING_DIRECTORY> the TED talks corpus. This corpus will be used later in order to train different Vector Space Models")
+
+    parser.add_argument('-a','--account', help="A gmail account. It will be used in order to download the TED 's spreadsheet ", default='')
+    parser.add_argument('-p','--passwd', help="The gmail account 's password ", metavar='PASSWORD', default='')
+    parser.add_argument('-f','--fname', help="The name of the file with the serialized data from the TED talks metadata and subtitles ", metavar='FILE_NAME', required=True)
+    parser.add_argument('-d','--isdb', help="It says if the TED data is stored in the database ", metavar='IS_DATABASE', choices=['y', 'n'], default='n')
+    parser.add_argument('-u','--dbuser', help="The database user ", metavar='DB_USER', default='')
+    parser.add_argument('-b','--dbpasswd', help="The password for the database user ", metavar='DB_USER_PASSWORD', default='')
+    parser.add_argument('-l','--isdow', help="It says if is downloading the TED spreadsheet from Internet ", metavar='IS_DOWNLOAD', choices=['y', 'n'], default='y')
+    parser.add_argument('-r','--istrain', help="It says if the script is generating the TED talks corpus for a later training. If IS_DOWNLOAD == 'y', then it is using the just serialized file with the downloaded data. If IS_DOWNLOAD == 'n', then it is using a previously serialized file ", metavar='IS_TRAIN', choices=['y', 'n'], default='y')
+    parser.add_argument('-t','--traindir', help="The name of an existing directory where to generate the TED talks corpus ", metavar='TRAINING_DIRECTORY', default='')
+
+    args = parser.parse_args()
+
+    if args.isdow == 'y':
+        if (args.account is None) or (args.passwd is None) or (args.account == '') or (args.passwd == ''):
+            print "The gmail account or gmail account 's password that will be used to download the TED spreadsheet cannot be empty"
+            sys.exit(2)
+
+    if args.istrain == 'y':
+        if (args.traindir is None) or (args.traindir == ''):
+            print 'The name of the directory where will be generated the TED talks corpus connot be empty'
+            sys.exit(2)
+
+    db_conn = None
+    db_cur = None
+    if args.isdb == 'y':
+       if (args.dbuser == '') or (args.dbpasswd == ''):
+           print 'The user or password for the database where will be stored the TED talks data cannot be empty'
+           sys.exit(2)
+       else:
+           connected, db_conn = connect_db(DB_HOST, DB_PORT, DB_NAME, args.dbuser, args.dbpasswd)
+           if not connected:
+               print 'It was not possible to establish the connection to the database that will store the TED talks data'
+               sys.exit(2)
+           else:
+               db_cur = db_conn.cursor() 
+
+    if args.isdow == 'y':
+        download_ted_data(args.account, args.passwd, args.fname, db_conn, db_cur)
+    
+    if args.istrain == 'y':
+        generate_training_files(args.fname, args.traindir) 

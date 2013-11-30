@@ -1,0 +1,86 @@
+#!/usr/bin/python
+# -*- encoding: utf-8 -*-
+
+#
+# 'train_lda_model_ted'
+# 
+# Copyright (C) 2013 Jorge Couchet <jorge.couchet at gmail.com>
+#
+# This file is part of 'ted-scimu'
+# 
+# 'ted-scimu' is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+# 
+# 'ted-scimu' is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+# 
+# You should have received a copy of the GNU General Public License
+# along with 'ted-scimu'.  If not, see <http ://www.gnu.org/licenses/>.
+#
+
+import generate_vsm
+import time
+import gensim
+from gensim import corpora, similarities, models
+
+IS_TED = True
+IS_NOUN = True
+CORPUS_FOLDER = 'training_ted'
+IS_GEN_DICT = True
+IS_TFIDF = True
+MIN_TFIDF_WEIGHT = 0.05
+TEXTS_FOR_AUGMENTATION = None
+FILENAME = 'gen_data/t1'
+ONLINE_TRAIN = 1
+CHUNKS = 80
+PASSES = 7
+TOPICS_NUMBER = 150
+OUTPUT_PREFIX='/tmp/idx'
+NUMBER_BEST = 10
+
+
+if __name__ == "__main__":
+
+    generate_vsm.tokenize(IS_TED, IS_NOUN, CORPUS_FOLDER, FILENAME, IS_GEN_DICT, FILENAME, FILENAME, IS_TFIDF, MIN_TFIDF_WEIGHT, FILENAME, TEXTS_FOR_AUGMENTATION)
+
+    lda = generate_vsm.train_lda_model(FILENAME, FILENAME, TOPICS_NUMBER, ONLINE_TRAIN, CHUNKS, PASSES, FILENAME)
+
+    dictionary = corpora.Dictionary().load(FILENAME + '.dict')
+
+    mm = corpora.MmCorpus(FILENAME + '.mm')
+
+    # The parameter 'output_prefix' is a prefix used to build the shards that are used to compute the query in a scalable way.
+    # If it is not specified, then a random filename in the tmp folder will be used
+    # ---
+    # The parameter 'corpus' is some document set (DS) transformed to the Vector Space where it is wanted to make the queries
+    # against this document set (DS). DS could be the document set used to train this Vector Space or another set:
+    #    1. For the Vector Space of (token_id, local_frecuency_in_doc), it is: [dictionary.doc2bow(doc) for doc in DS]. Where
+    #       'dictionary' is the dictionary that is coming from the document set used in the training phase
+    #    2. For the TF-IDF Vector Space, it is: tfidf[DS]. Where 'tfidf' is the TF-IDF model that is coming from the document 
+    #       set used in the training phase
+    #    3. For the LDA Vector Space, it is: lda[DS]. Where 'lda' is the LDA model that is coming from the document set used
+    #       in the training phase
+    # ---  
+    # The parameter 'num_features' is the dimension of the Vector Space being used:
+    #    1. For the Vector Space of (token_id, local_frecuency_in_doc): num_features = len(dictionary)
+    #    2. For the TF-IDF VSM: num_features = len(dictionary)
+    #    3. For the LDA VSM: num_features = number of topics
+    # ---
+    # The parameter 'num_best' filter the results of the query, returning only the top 'num_best' matches
+    # When 'num_best' is used the result of a query has the following format:
+    #    [(doc_id, similarity), .. (doc_id, similarity)]. Where the list is sorted by 'similarity', starting 
+    #    from the greater. The value 'doc_id' is the document id for some document from DS, and 'similarity' 
+    #    is how similar is 'doc_id' to the document in the query
+    # When 'num_best' is not specified, then the result of a query has the following format:
+    #   [(doc_id, similarity), .., (doc_id, similarity)]. In this list are all the documents from DS ordered
+    #   by doc_id
+    # ---
+    # The queries are performed using 'cosine similarity', thus 'similarity' goes from -1 to 1, where the greater, 
+    # the more similar
+    index = similarities.Similarity(output_prefix=OUTPUT_PREFIX, corpus=lda[mm], num_features=TOPICS_NUMBER, num_best=NUMBER_BEST)
+
+    index.save(FILENAME + '.index')

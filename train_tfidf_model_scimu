@@ -1,0 +1,39 @@
+#!/usr/bin/python
+# -*- encoding: utf-8 -*-
+
+#
+# 'train_tfidf_model_scimu'
+# 
+# Copyright (C) 2013 Jorge Couchet <jorge.couchet at gmail.com>
+#
+# This file is part of 'ted-scimu'
+# 
+# 'ted-scimu' is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+# 
+# 'ted-scimu' is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+# 
+# You should have received a copy of the GNU General Public License
+# along with 'ted-scimu'.  If not, see <http ://www.gnu.org/licenses/>.
+#
+
+import generate_vsm
+
+IS_TED = True
+IS_NOUN = True
+CORPUS_FOLDER = 'rel_scimu'
+IS_GEN_DICT = True
+IS_TFIDF = True
+MIN_TFIDF_WEIGHT = 0.05
+TEXTS_FOR_AUGMENTATION = None
+FILENAME = 'gen_data/sc-ind'
+
+
+if __name__ == "__main__":
+
+    generate_vsm.tokenize(IS_TED, IS_NOUN, CORPUS_FOLDER, FILENAME, IS_GEN_DICT, FILENAME, FILENAME, IS_TFIDF, MIN_TFIDF_WEIGHT, FILENAME, TEXTS_FOR_AUGMENTATION)
