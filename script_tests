@@ -1,0 +1,74 @@
+#!/usr/bin/env python
+# -*- encoding: utf-8 -*-
+
+#
+# 'script_tests'
+# 
+# Copyright (C) 2013 Jorge Couchet <jorge.couchet at gmail.com>
+#
+# This file is part of 'ted-scimu'
+# 
+# 'ted-scimu' is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+# 
+# 'ted-scimu' is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+# 
+# You should have received a copy of the GNU General Public License
+# along with 'ted-scimu'.  If not, see <http ://www.gnu.org/licenses/>.
+#
+
+
+import subprocess
+import time
+import unittest
+
+import base
+
+class BaseTest(unittest.TestCase):
+    """
+    It tests the functionality in 'base.py'
+    """
+    def test_get_all_filenames_1(self):
+        self.assertEqual(base.get_all_filenames("tests"), ("tests", ["test.docsid", "test.txt"]))
+    def test_get_all_filenames_2(self):
+        self.assertEqual(base.get_all_filenames("tests2"), (None,[]))
+
+    def test_normalize_word_1(self):
+        self.assertEqual(base.normalize_word("day"), "day")
+    def test_normalize_word_2(self):
+        self.assertEqual(base.normalize_word("däy"), "day")
+    def test_normalize_word_3(self):
+        self.assertEqual(base.normalize_word("dŧy"), "dy")
+    def test_normalize_word_4(self):
+        self.assertEqual(base.normalize_word("ŧ"), "")
+
+    def test_remove_punctuation_stopwords_1(self):
+        self.assertEqual(base.remove_punctuation_stopwords("The däy. with sun a", False), ["day", "sun"])
+    def test_remove_punctuation_stopwords_2(self):
+        self.assertEqual(base.remove_punctuation_stopwords("The däy. with sun yeah a", False), ["day", "sun", "yeah"])
+    def test_remove_punctuation_stopwords_3(self):
+        """
+        Using the extra stopwords for TED
+        """
+        self.assertEqual(base.remove_punctuation_stopwords("The däy. with sun yeah a", True), ["day", "sun"])
+    def test_remove_punctuation_stopwords_4(self):
+        self.assertEqual(base.remove_punctuation_stopwords("The ŧ yeah a 1", True), [])
+
+    def test_tokenize_document_1(self):
+        self.assertEqual(base.tokenize_document("The sún is smiling today, yeah!", False, False), ["sun", "smile", "today", "yeah"])
+    def test_tokenize_document_2(self):
+        self.assertEqual(base.tokenize_document("The sún is smiling today, yeah!", True, False), ["sun", "smile", "today"])
+    def test_tokenize_document_3(self):
+        self.assertEqual(base.tokenize_document("The sún is smiling today, yeah!", True, True), ["sun", "today"])
+
+    def test_get_docs2corpus_1(self):
+        self.assertEqual(base.get_docs2corpus("tests/test"), ["1976-466.txt", "1983-327.txt"])
+    def test_get_docs2corpus_2(self):
+        self.assertEqual(base.get_docs2corpus("tests/test2"), [])
+if __name__ == "__main__":
+    unittest.main()
